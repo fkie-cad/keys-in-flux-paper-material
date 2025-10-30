@@ -1,0 +1,202 @@
+# Libreswan/Pluto LLDB Monitoring Configuration
+# Function patterns for bytecode matching (fallback when symbols not available)
+
+functions:
+  # chunk_from_symkey() - Extract key material from NSS PK11SymKey
+  chunk_from_symkey:
+    enabled: true
+    symbol_name: "chunk_from_symkey"
+    patterns:
+      x86_64: "f3 0f 1e fa 55 48 89 e5 41 57 41 56 41 55 41 54"
+      aarch64: "ff 83 00 d1 f6 57 01 a9 f4 4f 02 a9 fd 7b 03 a9"
+    callbacks:
+      entry: "chunk_from_symkey_entry_callback"
+      exit: "chunk_from_symkey_exit_callback"
+
+  # create_symkey() - NSS symmetric key creation
+  create_symkey:
+    enabled: true
+    symbol_name: "create_symkey"
+    patterns:
+      x86_64: "55 48 89 e5 41 57 41 56 41 55 41 54 53 48 83 ec 48"
+      aarch64: "ff 43 01 d1 f4 4f 04 a9 fd 7b 05 a9 fd 43 01 91"
+    callbacks:
+      entry: "create_symkey_callback"
+
+  # ikev2_child_sa_keymat() - Child SA key derivation
+  ikev2_child_sa_keymat:
+    enabled: true
+    symbol_name: "ikev2_child_sa_keymat"
+    patterns:
+      x86_64: "f3 0f 1e fa 55 48 89 e5 41 57 41 56 53 48 81 ec"
+      aarch64: "ff 03 02 d1 fc 6f 06 a9 fa 67 07 a9 f8 5f 08 a9"
+    callbacks:
+      entry: "ikev2_child_sa_keymat_entry_callback"
+      exit: "ikev2_child_sa_keymat_exit_callback"
+
+  # ikev2_ike_sa_keymat() - IKE SA key derivation (parent SA keys)
+  # Returns PK11SymKey* containing concatenated SK_ai||SK_ar||SK_ei||SK_er||SK_pi||SK_pr
+  ikev2_ike_sa_keymat:
+    enabled: true
+    symbol_name: "ikev2_ike_sa_keymat"
+    patterns:
+      x86_64: ""  # To be determined via: objdump -d /usr/libexec/ipsec/pluto | grep -A20 'ikev2_ike_sa_keymat'
+      aarch64: ""  # To be determined via: objdump -d /usr/libexec/ipsec/pluto | grep -A20 'ikev2_ike_sa_keymat'
+    callbacks:
+      entry: "ikev2_ike_sa_keymat_entry_callback"
+      exit: "ikev2_ike_sa_keymat_exit_callback"
+
+  # encrypt_key_from_bytes() - Encrypt key from byte array (debug hook)
+  # Only active when SEC_DEBUG_RUN=True
+  encrypt_key_from_bytes:
+    enabled: true
+    symbol_name: "encrypt_key_from_bytes"
+    patterns:
+      x86_64: ""  # To be determined if symbol not found
+      aarch64: ""
+    callbacks:
+      entry: "encrypt_key_from_bytes_entry_callback"
+      exit: "encrypt_key_from_bytes_exit_callback"
+
+  # encrypt_key_from_symkey_bytes() - Encrypt key from PK11SymKey (debug hook)
+  # Only active when SEC_DEBUG_RUN=True
+  # Special handling: Parses PK11SymKey argument to show SECItem hexdump
+  encrypt_key_from_symkey_bytes:
+    enabled: true
+    symbol_name: "encrypt_key_from_symkey_bytes"
+    patterns:
+      x86_64: ""  # To be determined if symbol not found
+      aarch64: ""
+    callbacks:
+      entry: "encrypt_key_from_symkey_bytes_entry_callback"
+      exit: "encrypt_key_from_symkey_bytes_exit_callback"
+
+  # key_from_symkey_bytes() - Extract key from PK11SymKey (debug hook)
+  # Only active when SEC_DEBUG_RUN=True
+  # Minimal argument dump (only key_name), returns PK11SymKey* with SECItem parsing
+  key_from_symkey_bytes:
+    enabled: true
+    symbol_name: "key_from_symkey_bytes"
+    patterns:
+      x86_64: ""  # To be determined if symbol not found
+      aarch64: ""
+    callbacks:
+      entry: "key_from_symkey_bytes_entry_callback"
+      exit: "key_from_symkey_bytes_exit_callback"
+
+  # ike_sa_keymat() - IKE SA key material derivation (debug hook)
+  # Only active when SEC_DEBUG_RUN=True
+  # Parses PK11SymKey* return value only
+  ike_sa_keymat:
+    enabled: true
+    symbol_name: "ike_sa_keymat"
+    patterns:
+      x86_64: ""  # To be determined if symbol not found
+      aarch64: ""
+    callbacks:
+      entry: "ike_sa_keymat_entry_callback"
+      exit: "ike_sa_keymat_exit_callback"
+
+  # psk_auth() - PSK authentication (debug hook)
+  # Only active when SEC_DEBUG_RUN=True
+  # Raw hexdump of first 5 args + parse arg1 (PK11SymKey*)
+  psk_auth:
+    enabled: true
+    symbol_name: "psk_auth"
+    patterns:
+      x86_64: ""  # To be determined if symbol not found
+      aarch64: ""
+    callbacks:
+      entry: "psk_auth_entry_callback"
+
+  # crypt_derive() - Cryptographic key derivation (debug hook)
+  # Only active when SEC_DEBUG_RUN=True
+  # Parses PK11SymKey* and SECItem* arguments + return value
+  crypt_derive:
+    enabled: true
+    symbol_name: "crypt_derive"
+    patterns:
+      x86_64: ""  # To be determined if symbol not found
+      aarch64: ""
+    callbacks:
+      entry: "crypt_derive_entry_callback"
+      exit: "crypt_derive_exit_callback"
+
+  # Memory dump hooks - Always active (not controlled by SEC_DEBUG_RUN)
+  # These hooks trigger memory dumps when specific lifecycle events occur
+
+  # iketcp_cleanup() - IKE TCP cleanup
+  iketcp_cleanup:
+    enabled: true
+    symbol_name: "iketcp_cleanup"
+    patterns:
+      x86_64: ""
+      aarch64: ""
+    callbacks:
+      entry: "iketcp_cleanup_entry_callback"
+
+  # cleanup_dh_shared_secret() - DH shared secret cleanup
+  cleanup_dh_shared_secret:
+    enabled: true
+    symbol_name: "cleanup_dh_shared_secret"
+    patterns:
+      x86_64: ""
+      aarch64: ""
+    callbacks:
+      entry: "cleanup_dh_shared_secret_entry_callback"
+
+  # terminate_a_connection() - Connection termination
+  terminate_a_connection:
+    enabled: true
+    symbol_name: "terminate_a_connection"
+    patterns:
+      x86_64: ""
+      aarch64: ""
+    callbacks:
+      entry: "terminate_a_connection_entry_callback"
+
+  # rekey_connection_now() - Connection rekey trigger
+  rekey_connection_now:
+    enabled: true
+    symbol_name: "rekey_connection_now"
+    patterns:
+      x86_64: ""
+      aarch64: ""
+    callbacks:
+      entry: "rekey_connection_now_entry_callback"
+
+  # ike_sa_rekey_skeyseed() - IKE SA rekey skeyseed derivation
+  ike_sa_rekey_skeyseed:
+    enabled: true
+    symbol_name: "ike_sa_rekey_skeyseed"
+    patterns:
+      x86_64: ""
+      aarch64: ""
+    callbacks:
+      entry: "ike_sa_rekey_skeyseed_entry_callback"
+
+  # rekey_now() - Rekey operation
+  rekey_now:
+    enabled: true
+    symbol_name: "rekey_now"
+    patterns:
+      x86_64: ""
+      aarch64: ""
+    callbacks:
+      entry: "rekey_now_entry_callback"
+
+monitoring:
+  mode: "auto"
+  enable_dumps: true
+  enable_arg_dump: true
+  enable_file_logging: true
+
+ipsec:
+  ike_proposal: "aes256-sha256-modp2048"
+  esp_proposal: "aes256-sha256-modp2048"
+  psk_length: 32
+
+ground_truth:
+  enable_pluto_debug: true
+  env_vars:
+    PLUTO_CRYPTO_HELPER_DEBUG: "1"

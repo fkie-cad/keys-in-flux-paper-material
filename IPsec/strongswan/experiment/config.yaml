@@ -1,0 +1,127 @@
+# IPsec/strongSwan Experiment Configuration
+
+# Network Configuration
+network:
+  left:
+    namespace: "left"
+    ip: "10.0.0.1"
+    veth: "veth-left"
+  right:
+    namespace: "right"
+    ip: "10.0.0.2"
+    veth: "veth-right"
+  subnet:
+    left: "192.168.1.0/24"
+    right: "192.168.2.0/24"
+
+# strongSwan Configuration
+strongswan:
+  left:
+    config_dir: "/etc/strongswan-left"
+    vici_socket: "unix:///run/left.charon.vici"
+    pid_file: "/run/left.charon.pid"
+  right:
+    config_dir: "/etc/strongswan-right"
+    vici_socket: "unix:///run/right.charon.vici"
+    pid_file: "/run/right.charon.pid"
+
+  # IKE/ESP Proposals
+  ike_proposal: "aes128-sha256-modp2048"
+  esp_proposal: "aes128-sha256-modp2048"
+
+  # PSK authentication
+  psk: "test123"
+
+# LLDB Monitoring Configuration
+lldb:
+  # Breakpoint targets (function names in strongSwan)
+  breakpoints:
+    # Primary targets for IKE key derivation
+    - name: "ike_derived_keys"
+      description: "IKE session keys (SK_ai, SK_ar, SK_ei, SK_er)"
+      priority: "high"
+
+    # PRF operations
+    - name: "set_key"
+      description: "PRF key setting"
+      priority: "medium"
+
+    - name: "prf_plus_create"
+      description: "PRF+ seed for key expansion"
+      priority: "medium"
+
+    # Additional targets (may require adjustment for specific strongSwan version)
+    # Uncomment and adjust as needed:
+    # - name: "rekey_child_sa"
+    #   description: "CHILD SA rekey"
+    #   priority: "medium"
+    # - name: "rekey_ike_sa"
+    #   description: "IKE SA rekey"
+    #   priority: "medium"
+
+  # Memory dump settings
+  memory_dumps:
+    enabled: true
+    checkpoints:
+      - init
+      - handshake
+      - rekey
+      - terminate
+
+# Kernel Monitoring Configuration
+kernel:
+  # drgn-based XFRM state scanning
+  scan_regions:
+    - xfrm_state
+    - xfrm_algo
+    - crypto_ctx
+
+  checkpoints:
+    - init
+    - before_handshake
+    - after_handshake
+    - before_initiate
+    - after_initiate
+    - before_rekey
+    - after_rekey
+    - before_terminate
+    - after_terminate
+
+# Architecture Support
+architecture:
+  # Supported: x86_64, aarch64
+  detect_auto: true
+  register_conventions:
+    x86_64:
+      args: ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
+      stack_pointer: "rsp"
+    aarch64:
+      args: ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"]
+      stack_pointer: "sp"
+
+# Output Configuration
+output:
+  base_dir: "./results"
+  timestamp_format: "%Y%m%d_%H%M%S"
+  structure:
+    userspace:
+      - events.log
+      - events.jsonl
+      - dump_*.bin
+    kernel:
+      - xfrm_*.json
+
+# Terminal Configuration
+terminal:
+  # Preferred spawner: tmux, gnome-terminal, background
+  auto_detect: true
+  tmux:
+    session_name: "ipsec_experiment"
+  gnome_terminal:
+    geometry: "120x40"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARN, ERROR
+  console: true
+  file: true
