@@ -1,0 +1,54 @@
+services:
+  # 1. The TLS Server Service
+  server:
+    build: ./server
+    command: /app/run_server.sh ${TLS_VERSION:-13} ${ABORT:-1} ${KEY_UPDATE:-1}
+    networks:
+      - experiment_net
+    volumes:
+      - type: bind
+        source: ${RUN_DIR:-.}
+        target: /shared_data
+
+  # 2. The Client Service
+  client:
+    build:
+      context: ..
+      dockerfile: experiment/client/Dockerfile
+    command: /app/run_client.sh ${TLS_VERSION:-13} ${LIBRARY:-boringssl}
+    networks:
+      - experiment_net
+    volumes:
+      - type: bind
+        source: ${RUN_DIR:-.}
+        target: /shared_data
+    depends_on:
+      - server
+      - network_monitor  # Ensure network monitor is started first
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - "apparmor=unconfined"
+
+  # 3. The Network Monitoring Service
+  network_monitor:
+    build: ./network
+    environment:
+      - HOST_UID=${UID:-1000}
+      - HOST_GID=${GID:-1000}
+    volumes:
+      - type: bind
+        source: ${RUN_DIR:-.}
+        target: /shared_data
+    network_mode: "service:server"
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    depends_on:
+      - server
+
+networks:
+  experiment_net:
+    driver: bridge
