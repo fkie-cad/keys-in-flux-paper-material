@@ -1,0 +1,29 @@
+[cmake]
+version = "3.15"
+cmkr-include = "cmake/cmkr.cmake"
+
+[project]
+name = "Dump_lsass"
+include-before = [
+	"cmake/msvc-static-runtime.cmake",
+	"cmake/msvc-configurations.cmake",
+]
+
+[fetch-content.x64dbg]
+url = "https://sourceforge.net/projects/x64dbg/files/snapshots/snapshot_2025-08-19_19-40.zip"
+sha1 = "59ACEEBE442319400E38FA651CEAC8DF507D9D93"
+include-after = ["cmake/x64dbg.cmake"]
+
+[template.plugin]
+type = "shared"
+add-function = "x64dbg_plugin"
+
+[target.Dump_lsass]
+type = "plugin"
+sources = [
+    "src/*.cpp",
+    "src/*.h",
+]
+include-directories = [
+    "${x64dbg_SOURCE_DIR}/pluginsdk"
+]

@@ -1,0 +1,79 @@
+label = 0
+secret = 0
+time_stamp = 0
+ms_label = 0
+
+// delete all Breakpoints from previous runs
+bc
+bphc
+
+// find the PRF function in the ncryptsslp module
+
+//zweite
+findallmem 0, "4c 8b dc 55 56 57 49 8d 6b d9 48 81 ec d0 00 00 00 48 8b 05 38 af 02 00 48 33 c4 48 89 45 df 8b 45 4f 48 8b fa 33 d2", -1, system
+
+cmp $result, 0
+je error
+
+log "found Pattern"
+addr = ref.addr(0)
+log "Found Pattern at {p:addr}"
+
+// set breakpoint on entry and attach custom callback
+bp $addr
+SetBreakpointCommand $addr, "scriptcmd call on_entry_cb"
+
+run
+ret
+
+on_entry_cb:
+    log "Entered PRF()"
+
+    mov label, [rsp+30]
+    log "Label: {s:label}"
+
+    // we are looking for the "key expansion" label
+    cmp byte:[label], 6b
+    je get_ms
+
+    run
+    ret
+
+get_ms:
+    log "Getting MS"
+
+    // Save the timestamp
+    gettimemicros
+    mov time_stamp, $result
+
+    mov secret, arg.get(3)
+    mov ms_label, label
+    log "saving MS"
+    logmemvars ms_label, secret, 30, time_stamp
+
+    log "setting a WP on MS at {p:secret}"
+    bph secret, w, 1
+    SetHardwareBreakpointCommand secret, "scriptcmd call on_wp_hit"
+
+    run
+    ret
+
+on_wp_hit:
+    // Save the timestamp
+    gettimemicros
+    mov time_stamp, $result
+
+    hit_addr = cip
+
+    log "Watchpoint hit for MS at address {p:hit_addr}"
+    log "Current data at watchpoint: {mem;30@hit_addr}"
+    
+    logmemvars ms_label, secret , 30, time_stamp
+
+    run
+    ret
+
+error:
+    log "No Pattern found"
+    run
+    ret

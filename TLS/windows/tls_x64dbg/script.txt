@@ -1,0 +1,341 @@
+secret_kind = 0
+secret_str = 0
+saved_secret_kind = 0
+saved_bdd = 0
+
+c_hs_addr = 0
+s_hs_addr = 0
+c_ap_addr = 0
+s_ap_addr = 0
+
+time_stamp = 0
+secret_data = 0
+
+str1 = 0
+str2 = 0
+
+new_mem_addr = 0
+c_hs_addr_copy = 0
+s_hs_addr_copy = 0
+c_ap_addr_copy = 0
+s_ap_addr_copy = 0
+c_hs_size = 0
+s_hs_size = 0
+c_ap_size = 0
+s_ap_size = 0
+
+// delete all Breakpoints from previous runs
+bc
+bphc
+
+// find the derive_secret function in the ncryptsslp module
+findallmem 0, "48 8B C4 44 88 48 20 4C 89 40 18 48 89 50 10 53 56 41 54 41 55 41 56 41 57 48 81 EC A8 00 00 00 33 DB 33 F6 89 9C 24 E0 00 00 00 45 0F B6 E1 4D 8B F0 4C 8B F9 48 85 C9", -1, system
+cmp $result, 0
+je error
+
+log "found Pattern"
+addr = ref.addr(0)
+log "Found Pattern at {p:addr}"
+
+// set breakpoint on entry and attach custom callback
+bp $addr
+SetBreakpointCommand $addr, "scriptcmd call on_entry_cb"
+
+run
+ret
+
+// callback for setting return BP
+on_entry_cb:
+    log "Entered Derive_secrets()"
+
+    // get the label and store it globally for use onreturn
+    set secret_kind, arg.get(1)
+    set saved_secret_kind, secret_kind
+    log "Label: {utf8@secret_kind}"
+
+    // Check for key Update
+    cmp byte:[saved_secret_kind], 74 // 't'
+    je on_keyUpdate_cb
+
+    // Compare first character to distinguish between client/server
+    secret_index = 0
+    cmp byte:[saved_secret_kind], 63  // 'c'
+    jne check_server_secret
+    secret_index = 0xc
+    je get_struct
+
+    check_server_secret:
+    cmp byte:[saved_secret_kind], 73  // 's' 
+    secret_index = 7
+    jne ignore_secret
+    je get_struct
+
+on_keyUpdate_cb:
+    gettimemicros
+    mov time_stamp, $result
+
+    // set BP on return
+    ret_addr = [rsp]
+    bpx ret_addr
+    SetBreakpointCommand ret_addr, "scriptcmd call on_keyUpdate_leave_cb"
+
+    log "-----------KEY_UPDATE-------------"
+
+    log "try dumping..."
+    adump_lsass "C:\Temp\KeyUpdate_OnEnter.dmp"
+    log "dumped memory"
+
+    run
+    ret
+
+on_keyUpdate_leave_cb:
+    gettimemicros
+    mov time_stamp, $result
+
+    log "-----------KEY_UPDATE OnLeave-------------"
+
+    log "try dumping..."
+    adump_lsass "C:\Temp\KeyUpdate_OnLeave.dmp"
+    log "dumped memory"
+
+    run
+    ret
+
+
+get_struct:
+    // Get the struct storing the secret
+    set mybdd, arg.get(secret_index)
+    set saved_bdd, mybdd
+    log "mybdd: {p:mybdd} at argument index {d:secret_index}"
+
+    // set BP on return
+    ret_addr = [rsp]
+    bpx ret_addr
+    SetBreakpointCommand ret_addr, "scriptcmd call on_leave_cb"
+    run
+    ret
+
+
+
+// callback on exit derive_secret
+on_leave_cb:
+    step
+    // Save the timestamp
+    gettimemicros
+    mov time_stamp, $result
+
+    // Read the secret pointer from the structs and set a Wacthpoint on it 
+    // This part was taken from https://github.com/ngo/win-frida-scripts/blob/master/lsasslkeylog-easy/keylog.js
+    set_wp:
+    log "Setting WP for {utf8@saved_secret_kind}"
+
+    // Read struct_3lss
+    temp_addr = mybdd
+    temp_addr = temp_addr + 0x10
+    log "Reading struct_3lss from: {p:temp_addr}"
+    struct_3lss = [temp_addr]
+    log "struct_3lss: {p:struct_3lss}"
+
+    // Check if struct_3lss is valid
+    cmp struct_3lss, 0
+    je error_struct
+
+    // Read struct_RUUU
+    temp_addr = struct_3lss
+    temp_addr = temp_addr + 0x20
+    log "Reading struct_RUUU from: {p:temp_addr}"
+    struct_RUUU = [temp_addr]
+    log "struct_RUUU: {p:struct_RUUU}"
+
+    // Check if struct_RUUU is valid
+    cmp struct_RUUU, 0
+    je error_struct
+
+    // Read struct_YKSM
+    temp_addr = struct_RUUU
+    temp_addr = temp_addr + 0x10
+    log "Reading struct_YKSM from: {p:temp_addr}"
+    struct_YKSM = [temp_addr]
+    log "struct_YKSM: {p:struct_YKSM}"
+
+    // Check if struct_YKSM is valid
+    cmp struct_YKSM, 0
+    je error_struct
+
+    // Read size
+    temp_addr = struct_YKSM
+    temp_addr = temp_addr + 0x10
+    secret_size = dword:[temp_addr]
+    log "Secret size: {d:secret_size}"
+
+    // Read secret_ptr
+    temp_addr = struct_YKSM
+    temp_addr = temp_addr + 0x18
+    secret_ptr = [temp_addr]
+    log "secret_ptr: {p:secret_ptr}"
+
+    // Display the secret data using the actual size
+    log "Secret data ({d:secret_size} bytes): {mem;secret_size@secret_ptr}"
+
+    // Allocate memory
+    log "Allocting bytes for persistent copy..."
+    alloc secret_size
+    mov new_mem_addr, $result
+
+    // Check for success
+    cmp new_mem_addr, 0
+    je alloc_error
+
+    // Copy the secret
+    log "Copying secret from {p:secret_ptr} to {p:new_mem_addr}"
+    memcpy new_mem_addr, secret_ptr, secret_size
+
+    logmemvars saved_secret_kind,secret_ptr,secret_size,time_stamp   
+
+    // If label already exists, skip
+    labellist
+    i = 0
+    // if list empty set wp
+    cmp i, ref.count()
+    je after_loop
+    
+    loop:
+        address = ref.addr(i)
+        cmp address, secret_ptr
+        je already_exists
+        i++
+        cmp i, ref.count()
+        jne loop        
+
+after_loop:
+    //trying size = 1
+    //bpmrange secret_ptr, 1, w
+    //membp secret_ptr, 1, w
+    bph secret_ptr, w, 1
+    SetHardwareBreakpointCommand secret_ptr, "scriptcmd call on_wp_hit"
+    lbl secret_ptr, "{utf8@saved_secret_kind}"
+    log "Set WP for {utf8@saved_secret_kind} on {p:secret_ptr}"
+
+
+    // set the ptr globally
+    // Compare saved_secret_kind to known labels and set global pointer variables
+    // Check first character: 'c' or 's'?
+    cmp byte:[saved_secret_kind], 63  // 'c'
+    je check_client_second_char
+    cmp byte:[saved_secret_kind], 73  // 's'
+    je check_server_second_char
+    jmp end_set_ptr // Neither 'c' nor 's', shouldn't happen, but jump to end
+
+check_client_second_char:
+    // First char was 'c'. Check second char: 'h' or 'a'?
+    cmp byte:[saved_secret_kind+2], 68 // 'h'
+    je set_c_hs_ptr
+    cmp byte:[saved_secret_kind+2], 61 // 'a'
+    je set_c_ap_ptr
+    jmp end_set_ptr // Unknown client secret type
+
+check_server_second_char:
+    // First char was 's'. Check second char: 'h' or 'a'?
+    cmp byte:[saved_secret_kind+2], 68 // 'h'
+    je set_s_hs_ptr
+    cmp byte:[saved_secret_kind+2], 61 // 'a'
+    je set_s_ap_ptr
+    jmp end_set_ptr // Unknown server secret type
+
+set_c_hs_ptr:
+    set c_hs_addr, secret_ptr
+    set c_hs_addr_copy, new_mem_addr
+    set c_hs_size, secret_size
+    jmp end_set_ptr
+
+set_s_hs_ptr:
+    set s_hs_addr, secret_ptr
+    set s_hs_addr_copy, new_mem_addr
+    set s_hs_size, secret_size
+    jmp end_set_ptr
+
+set_c_ap_ptr:
+    set c_ap_addr, secret_ptr
+    set c_ap_addr_copy, new_mem_addr
+    set c_ap_size, secret_size
+    jmp end_set_ptr
+
+set_s_ap_ptr:
+    set s_ap_addr, secret_ptr
+    set s_ap_addr_copy, new_mem_addr
+    set s_ap_size, secret_size
+
+    jmp end_set_ptr
+
+end_set_ptr:
+    run
+    ret
+
+on_wp_hit:
+    // Save the timestamp
+    gettimemicros
+    mov time_stamp, $result
+
+    hit_addr = cip
+    
+
+    cmp cip, c_hs_addr
+    je set_c_hs
+    cmp cip, s_hs_addr
+    je set_s_hs
+    cmp cip, c_ap_addr
+    je set_c_ap
+    cmp cip, s_ap_addr
+    je set_s_ap
+
+    do_wp:
+    log "Watchpoint hit for {utf8@saved_secret_kind} at address {p:hit_addr}"
+    log "Current data at watchpoint: {mem;20@hit_addr}"
+    
+    logmemvars saved_secret_kind,secret_ptr,secret_size,time_stamp   
+
+    run
+    ret
+
+set_c_hs:
+    saved_secret_kind = "c hs secret"
+    jmp do_wp
+
+set_s_hs:
+    saved_secret_kind = "s hs secret"
+    jmp do_wp
+
+set_c_ap:
+    saved_secret_kind = "c ap secret"
+    jmp do_wp
+
+set_s_ap:
+    saved_secret_kind = "s ap secret"
+    jmp do_wp
+
+already_exists:
+    log "Memory Breakpoint already active for {utf8@saved_secret_kind} on {p:secret_ptr} "
+    ret
+
+// ERROR TYPES
+
+error:
+    msg "Pattern not found in ncryptsslp.dll"
+    ret
+
+isnul:
+    msg "parameter is nul"
+    ret
+
+error_struct:
+    log "Invalid pointer in structure chain"
+    run
+    ret
+
+alloc_error:
+    log "ERROR: Failed to allocate memory for secret copy!"
+    run
+    ret
+
+ignore_secret:
+    run
