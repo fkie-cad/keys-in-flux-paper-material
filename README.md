@@ -45,7 +45,7 @@ These timelines let us answer questions like:
 ## Zenodo archive (full dataset and large binaries)
 Large artifacts (full packet captures, memory snapshots, debugger traces, container images, plot-ready CSVs) are published via Zenodo:
 
-➡ **Zenodo Artifact Archive:**  
+**Zenodo Artifact Archive:**  
 https://zenodo.org/records/17496211?token=eyJhbGciOiJIUzUxMiJ9.eyJpZCI6ImQ1YjdhOTY0LWNlZjQtNDc4YS05ZDQ5LWU5N2MzYWNiNWI0YiIsImRhdGEiOnt9LCJyYW5kb20iOiI0OGYzMzIzMTg1NDhiNzljYzRlOTViY2MyZTE2MzRlYyJ9.5jBBHA2oCArwyLjPA7kESO1lPRhB-thiXgfCzaGB8yac1MxKieHqWK1bCw_0W2s5BNZvg_oxZ9L9iJNdiGkHwA
 
 That archive is the authoritative source of:
