@@ -229,7 +229,7 @@ A BibTeX entry will be added once the camera-ready metadata (title, authors, DOI
 
 ---
 
-## 📜 License
+## License
 See `LICENSE` in this repository for terms of use.
 
 If you plan to reuse the instrumentation code (LLDB/Frida hooks) in other tools, please check the license first and attribute appropriately.
