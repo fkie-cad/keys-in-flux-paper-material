@@ -1,0 +1,14 @@
+version: "3.8"
+services:
+  dropbear_server:
+    entrypoint: /opt/lldb/entrypoint_simple.sh
+
+  dropbear_server_dbg:
+    command: ["/usr/sbin/dropbear", "-F", "-E", "-p", "22", "-r", "/etc/dropbear/dropbear_rsa_host_key"]
+
+  openssh_server:
+    command: ["/usr/sbin/sshd", "-D", "-e"]
+
+  wolfssh_server:
+    entrypoint: []
+    command: ["bash", "-c", "ldconfig && /usr/local/bin/wolfsshd -D -d -p 22"]

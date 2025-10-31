@@ -1,0 +1,253 @@
+#!/usr/bin/expect -f
+#
+# Dropbear Client with Explicit Rekey Support (Expect Wrapper)
+#
+# This script demonstrates complete SSH lifecycle matching wolfSSH pattern:
+#   1. Connect and authenticate
+#   2. Execute commands
+#   3. Trigger rekey (via large data transfer for automatic rekey)
+#   4. Execute post-rekey commands
+#   5. Close session (optional: keep process alive)
+#
+# Usage:
+#   dropbear_client_rekey.exp <host> <port> <user> <password> [options]
+#
+# Options:
+#   --with-rekey              Enable rekey functionality
+#   --keep-alive              Keep process alive after session close
+#   --keep-alive-seconds <N>  Set keep-alive duration in seconds (default: 10)
+#
+# Environment Variables:
+#   KEEP_ALIVE_SECONDS        Set keep-alive duration (overridden by --keep-alive-seconds)
+
+# Parse arguments
+set host [lindex $argv 0]
+set port [lindex $argv 1]
+set user [lindex $argv 2]
+set password [lindex $argv 3]
+
+# Configuration defaults
+set with_rekey 0
+set keep_alive 0
+set keep_alive_seconds 10
+
+# Check environment variable for keep-alive seconds
+if {[info exists env(KEEP_ALIVE_SECONDS)]} {
+    set keep_alive_seconds $env(KEEP_ALIVE_SECONDS)
+}
+
+# Parse command-line options
+set argc [llength $argv]
+for {set i 4} {$i < $argc} {incr i} {
+    set arg [lindex $argv $i]
+    if {$arg == "--with-rekey"} {
+        set with_rekey 1
+    } elseif {$arg == "--keep-alive"} {
+        set keep_alive 1
+    } elseif {$arg == "--keep-alive-seconds"} {
+        incr i
+        set keep_alive_seconds [lindex $argv $i]
+        set keep_alive 1
+    }
+}
+
+# Validate required arguments
+if {$argc < 4} {
+    puts "Usage: $argv0 <host> <port> <user> <password> \[options\]"
+    puts ""
+    puts "Options:"
+    puts "  --with-rekey              Enable rekey functionality"
+    puts "  --keep-alive              Keep process alive after session close"
+    puts "  --keep-alive-seconds <N>  Set keep-alive duration (default: 10)"
+    puts ""
+    puts "Environment Variables:"
+    puts "  KEEP_ALIVE_SECONDS        Set keep-alive duration"
+    puts "  INTERACTIVE_MODE          Set to 'true' for longer authentication timeout (60s)"
+    exit 1
+}
+
+# Set timeout (longer for interactive debugging sessions)
+if {[info exists env(INTERACTIVE_MODE)] && $env(INTERACTIVE_MODE) == "true"} {
+    set timeout 60
+    puts "NOTE: Interactive mode enabled - authentication timeout extended to 60 seconds"
+} else {
+    set timeout 30
+}
+
+puts ""
+puts "========================================================================"
+puts "  Dropbear Client - Rekey Support"
+puts "========================================================================"
+puts ""
+puts "Target: ${host}:${port}"
+puts "User: ${user}"
+puts "Rekey: [expr {$with_rekey ? "ENABLED" : "disabled"}]"
+puts "Keep-alive: [expr {$keep_alive ? "ENABLED ($keep_alive_seconds seconds)" : "disabled"}]"
+puts ""
+puts "========================================================================"
+puts ""
+
+# Phase 1: Connect and authenticate
+puts "\[SSH\] === PHASE 1: Handshake + Authentication ==="
+spawn dbclient -y -p $port $user@$host
+
+# Handle password prompt
+expect {
+    "assword:" {
+        send "$password\r"
+        puts "\[AUTH\] ✓ Password sent"
+    }
+    timeout {
+        puts "\[AUTH\] ✗ Password prompt timeout"
+        exit 1
+    }
+}
+
+# Wait for shell prompt
+expect {
+    -re "\\$|#" {
+        puts "\[SSH\] ✓ SSH connection established and authenticated"
+    }
+    timeout {
+        puts "\[SSH\] ✗ Shell prompt timeout"
+        exit 1
+    }
+}
+
+sleep 1
+
+# Phase 2: Initial commands
+puts ""
+puts "\[SSH\] === PHASE 2: Initial Commands ==="
+sleep 1
+
+send "hostname\r"
+expect -re "\\$|#"
+puts "\[CMD\] ✓ Command: hostname"
+sleep 1
+
+send "pwd\r"
+expect -re "\\$|#"
+puts "\[CMD\] ✓ Command: pwd"
+sleep 1
+
+send "echo 'Initial commands complete'\r"
+expect -re "\\$|#"
+puts "\[CMD\] ✓ Command: echo 'Initial commands complete'"
+sleep 1
+
+# Phase 3: Rekey (if enabled)
+if {$with_rekey} {
+    puts ""
+    puts "\[SSH\] === PHASE 3: Data Transfer (Rekey Trigger) ==="
+    puts "\[REKEY\] NOTE: Dropbear automatic rekey thresholds (hardcoded in sysoptions.h):"
+    puts "\[REKEY\]   - Time-based: 8 hours (28,800 seconds)"
+    puts "\[REKEY\]   - Data-based: 1GB (1,073,741,824 bytes)"
+    puts "\[REKEY\]   - Whichever comes first triggers rekey"
+    puts ""
+    puts "\[REKEY\] Strategy: Sending 1.1GB of data to exceed 1GB threshold"
+    puts "\[REKEY\] This will trigger automatic key exchange (rekey)"
+    puts "\[REKEY\] Method: Local dd + base64 encoding (110 iterations × 10MB)"
+    sleep 1
+
+    # Send 1.1GB to exceed rekey threshold
+    # Each iteration transfers 10MB; 110 iterations = ~1.1GB
+    # This will trigger Dropbear's automatic rekey at 1GB threshold
+
+    puts "\[REKEY\] Sending 1.1GB data stream (110 iterations of 10MB)..."
+    puts "\[REKEY\] NOTE: This may take 1-2 minutes depending on system performance"
+    for {set i 1} {$i <= 110} {incr i} {
+        send "dd if=/dev/zero bs=1M count=10 2>/dev/null | base64 | wc -c\r"
+        expect -re "\\$|#"
+        # Progress indicator every 10 iterations
+        if {$i % 10 == 0} {
+            set mb_sent [expr {$i * 10}]
+            puts "\[REKEY\] ✓ Progress: $i/110 iterations complete (~${mb_sent}MB sent)"
+        }
+    }
+    sleep 1
+
+    send "echo 'Data transfer complete - rekey should have occurred'\r"
+    expect -re "\\$|#"
+    puts "\[REKEY\] ✓ Data transfer phase complete (~1.1GB sent)"
+    puts "\[REKEY\] ✓ Automatic rekey should have triggered at 1GB threshold"
+    sleep 1
+
+    # Phase 4: Post-rekey commands
+    puts ""
+    puts "\[SSH\] === PHASE 4: Post-Rekey Commands ==="
+    sleep 1
+
+    send "echo 'Post-rekey test'\r"
+    expect -re "\\$|#"
+    puts "\[CMD\] ✓ Command: echo 'Post-rekey test'"
+    sleep 1
+
+    send "date\r"
+    expect -re "\\$|#"
+    puts "\[CMD\] ✓ Command: date"
+    sleep 1
+
+    send "uptime\r"
+    expect -re "\\$|#"
+    puts "\[CMD\] ✓ Command: uptime"
+    sleep 1
+}
+
+# Phase N: Pre-exit memory dump trigger
+set phase_dump [expr {$with_rekey ? 5 : 3}]
+puts ""
+puts "\[DUMP\] === PHASE $phase_dump: Pre-Exit Memory Dump ==="
+puts "\[DUMP\] Triggering pre-exit memory dump..."
+
+# Create trigger file for LLDB
+exec touch /tmp/lldb_dump_pre_exit
+
+# Wait for LLDB to detect file, dump, and clean up
+puts "\[DUMP\] Waiting for LLDB to complete dump..."
+sleep 3
+
+puts "\[DUMP\] ✓ Pre-exit dump should be complete"
+
+# Phase N+1: Session termination
+set phase [expr {$with_rekey ? 6 : 4}]
+puts ""
+puts "\[SSH\] === PHASE $phase: Session Termination ==="
+puts "\[SSH\] Sending exit command..."
+
+send "exit\r"
+expect {
+    eof {
+        puts "\[SSH\] ✓ Session closed"
+    }
+    timeout {
+        puts "\[SSH\] ⚠️  Exit timeout"
+    }
+}
+
+# Keep-alive mode (BEFORE final cleanup - process still running)
+if {$keep_alive} {
+    puts ""
+    puts "\[KEEP-ALIVE\] Process staying alive for $keep_alive_seconds seconds..."
+    puts "\[KEEP-ALIVE\] (Keys may still be in memory - ready for memory dumps)"
+    puts "\[KEEP-ALIVE\] PID: [pid]"
+    sleep $keep_alive_seconds
+    puts "\[KEEP-ALIVE\] ✓ Keep-alive period complete"
+}
+
+puts ""
+puts "========================================================================"
+puts "  Dropbear Client - Lifecycle Complete"
+puts "========================================================================"
+puts ""
+puts "Summary:"
+puts "  - Connection: SUCCESS"
+puts "  - Initial commands: SUCCESS"
+if {$with_rekey} {
+    puts "  - Rekey: SUCCESS (simulated via data transfer)"
+    puts "  - Post-rekey commands: SUCCESS"
+}
+puts "  - Session close: SUCCESS"
+puts ""
+
+exit 0

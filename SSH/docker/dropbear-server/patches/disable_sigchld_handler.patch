@@ -1,0 +1,33 @@
+--- a/src/svr-chansession.c
++++ b/src/svr-chansession.c
+@@ -1039,6 +1039,15 @@ static void addchildpid(struct ChanSess *chansess, pid_t pid) {
+ 	sigaction(SIGCHLD, &sa_chld, NULL);
+ }
+
++// HYPOTHESIS 1 TEST PATCH: Disable SIGCHLD handler registration
++//
++// This patch comments out the SIGCHLD handler to test if signal handler
++// interference is causing LLDB trace mode when watchpoints are created.
++//
++// Expected Outcome:
++//   ✅ If trace mode stops → Confirms Hypothesis 1 (SIGCHLD is the cause)
++//   ❌ If trace mode continues → Rejects Hypothesis 1 (look elsewhere)
++
+ static void addchildpid(struct ChanSess *chansess, pid_t pid) {
+
+ 	/* static race-condition safe, drop sessions over MAX_PEERS */
+@@ -1053,7 +1062,13 @@ static void addchildpid(struct ChanSess *chansess, pid_t pid) {
+ 	}
+ 	svr_ses.childpidsize++;
+
+-	sigaction(SIGCHLD, &sa_chld, NULL);
++	// HYPOTHESIS 1 TEST: Comment out SIGCHLD handler registration
++	// sigaction(SIGCHLD, &sa_chld, NULL);
++
++	fprintf(stderr, "[PATCH] SIGCHLD handler DISABLED for Hypothesis 1 test\n");
++	fprintf(stderr, "[PATCH] If trace mode disappears, SIGCHLD was the root cause\n");
++
++	// NOTE: This may cause zombie processes, but only for testing
+ }
+
+ /* Called from the main select() loop to handle child processes which have

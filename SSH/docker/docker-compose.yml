@@ -1,0 +1,494 @@
+version: "3.8"
+services:
+  openssh_server:
+    build:
+      context: .
+      dockerfile: openssh-server/Dockerfile
+    container_name: openssh_server
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/lldb_results:/data/lldb_results
+      - ./lldb:/opt/lldb:ro  # Mount LLDB callbacks
+      - ./data/captures:/data/captures  # PCAP captures
+    environment:
+      SSH_SERVER_TYPE: openssh
+      LLDB_RESULTS_DIR: /data/lldb_results
+      LLDB_DUMPS_DIR: /data/dumps
+      LLDB_KEYLOG: /data/keylogs/ssh_keylog.log
+      LLDB_ENABLE_MEMORY_DUMPS: "true"
+      LLDB_ENABLE_WATCHPOINTS: "false"  # Phase 5: disabled for now
+    # ═══════════════════════════════════════════════════════════════════════
+    # OpenSSH Testing Modes - Select ONE:
+    # ═══════════════════════════════════════════════════════════════════════
+    # Phase 1-3: LLDB approaches (all failed due to OpenSSH 10.x sensitivity)
+    # command: /opt/lldb/attach_lldb_monitor.sh           # Phase 1: pgrep
+    # command: /opt/lldb/attach_lldb_followfork.sh        # Phase 2: follow-fork
+    # command: /opt/lldb/attach_lldb_waitfor.sh           # Phase 3: --waitfor
+    #
+    # Phase 4: LD_PRELOAD (non-invasive, no ptrace) - CURRENT
+    command: /opt/hooks/entrypoint_preload.sh
+    # ═══════════════════════════════════════════════════════════════════════
+    ports:
+      - "2222:22"
+    tty: true
+    stdin_open: true
+
+  dropbear_server:
+    build:
+      context: .
+      dockerfile: dropbear-server/Dockerfile
+    container_name: dropbear_server
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/lldb_results:/data/lldb_results
+    environment:
+      SSH_SERVER_TYPE: dropbear
+      LLDB_RESULTS_DIR: /data/lldb_results
+      LLDB_DUMPS_DIR: /data/dumps
+      LLDB_AUTO_CONTINUE: "true"  # V2: Enable auto-continue for background monitoring
+      LLDB_DEBUG_OUTPUT: "true"   # V2: Enable debug output
+      LLDB_FORK_STRATEGY: "follow_connection"  # V2: Stay with connection handler after fork #2
+      LLDB_ENABLE_WATCHPOINTS: "true"  # V2: ENABLED - testing fork timing safeguards
+      LLDB_ENABLE_MEMORY_DUMPS: "false"  # V2: Keep disabled to reduce overhead
+      # DROPBEAR_ABORT_HOOKS: "dropbear_exit,send_msg_disconnect"  # Comma-separated list of abort functions to hook
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # DROPBEAR TEST MODES - Systematic Watchpoint Investigation
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Uncomment ONE of the following modes to test:
+    #
+    # MODE 1: Baseline (No LLDB)
+    #   - Dropbear runs normally without any instrumentation
+    #   - Tests: Basic SSH functionality
+    #   - Expected: ✅ SSH works perfectly
+    #   - Log: Container logs only (no LLDB logs)
+    # command: /opt/lldb/entrypoint_simple.sh
+    #
+    # MODE 2: Key Extraction Only (LLDB with 2 breakpoints, NO watchpoints)
+    #   - LLDB attached with fork + KEX breakpoints
+    #   - Extracts ChaCha20 keys from memory
+    #   - NO watchpoints created
+    #   - Tests: LLDB breakpoints + key extraction without watchpoints
+    #   - Expected: ✅ Keys extracted, 0 trace hits, SSH works
+    #   - Log: /data/lldb_results/lldb_keyonly_output.log
+    # command: /opt/lldb/entrypoint_keyonly.sh
+    #
+    # MODE 3: Minimal Watchpoint (LLDB with 2 breakpoints + 1 watchpoint)
+    #   - Same as Mode 2 PLUS creates hardware watchpoint on key
+    #   - Tests: Effect of adding watchpoint to working configuration
+    #   - Expected: ❌ Trace mode triggered (11+ trace hits), SSH hangs
+    #   - Log: /data/lldb_results/lldb_output.log
+    # command: /opt/lldb/entrypoint_minimal.sh
+    #
+    # MODE 4: HYPOTHESIS 1 TEST - SIGCHLD Blocking (COMPLETED - REJECTED ❌)
+    #   - Same as Mode 3 BUT blocks SIGCHLD before watchpoint creation
+    #   - Tests: If blocking SIGCHLD prevents trace mode
+    #   - Result: ❌ REJECTED - Still 11 trace hits with SIGCHLD blocked
+    #   - Log: /data/lldb_results/lldb_test_nosigchld_output.log
+    # command: /opt/lldb/entrypoint_test_nosigchld.sh
+    #
+    # MODE 5: HYPOTHESIS 3 TEST - Immediate Watchpoint Disable (COMPLETED ✅)
+    #   - Same as Mode 3 BUT disables watchpoint immediately after creation
+    #   - Tests: If active monitoring (vs creation) causes trace mode
+    #   - Result: ✅ SUCCESS - 0 trace hits with disabled watchpoint
+    #   - Conclusion: ACTIVE monitoring causes trace mode, not creation
+    #   - Log: /data/lldb_results/lldb_test_disable_wp_output.log
+    # command: /opt/lldb/entrypoint_test_disable_wp.sh
+    #
+    # MODE 6A: REGISTER-BASED Extraction + IMMEDIATE Enable (COMPLETED ⚠️)
+    #   - Uses x2 register to get key pointer (matching IPsec pattern)
+    #   - NO symbolic navigation (FindGlobalVariables, GetChildMemberWithName)
+    #   - Direct register reading like strongSwan
+    #   - IMMEDIATE watchpoint enable after extraction
+    #   - Result: ✅ First watchpoint hit detected! ❌ But trace mode (11 trace hits)
+    #   - Analysis: Watching STACK memory (x2 parameter) that gets destroyed on return
+    #   - Conclusion: Register extraction works, but wrong location (stack vs state)
+    #   - Log: /data/lldb_results/lldb_test_register_output.log
+    # command: /opt/lldb/entrypoint_test_register.sh
+    #
+    # MODE 6B: REGISTER-BASED + DELAYED Enable (Quick verification)
+    #   - Same as Mode 6A BUT with 1.5 second delay before enable
+    #   - Still watches x2 (stack parameter - temporary)
+    #   - Expected: ❌ Still fails (stack memory destroyed)
+    #   - Purpose: Confirm delay alone doesn't help with wrong location
+    #   - Log: /data/lldb_results/lldb_test_register_delayed_output.log
+    # command: /opt/lldb/entrypoint_test_register_delayed.sh
+    #
+    # MODE 6C-IMMEDIATE: STATE-BASED + IMMEDIATE Enable (COMPLETED ❌)
+    #   - Watch x5 (state->chacha) NOT x2 (key parameter)
+    #   - Entry/exit breakpoint pattern (LR-based exit breakpoint)
+    #   - Searches for key within state structure
+    #   - Watches PERSISTENT heap storage (matches IPsec pattern exactly)
+    #   - IMMEDIATE watchpoint enable after extraction
+    #   - Result: ❌ 11 trace hits (persistent heap + immediate enable = FAILS)
+    #   - Conclusion: Location correct, but timing matters!
+    #   - Log: /data/lldb_results/lldb_test_state_immediate_output.log
+    # command: /opt/lldb/entrypoint_test_state_immediate.sh
+    #
+    # MODE 6C-DELAYED: STATE-BASED + DELAYED Enable (TESTING NOW 🔬)
+    #   - Same as Mode 6C-Immediate BUT with 1.5 second delay before enable
+    #   - Watches x5 (state->chacha) - persistent storage
+    #   - Delayed enable (memory stabilization / timing critical)
+    #   - 6C-Immediate failed → Testing if DELAY prevents trace mode
+    #   - Expected: ✅ 0 trace hits (location correct + timing delay = success)
+    #   - Log: /data/lldb_results/lldb_test_state_delayed_output.log
+    command: /opt/lldb/entrypoint_test_state_delayed.sh
+    #
+    # MODE 7: Full Monitoring (V2 - deprecated, many breakpoints)
+    #   - Complete monitoring with 10+ breakpoints
+    #   - Not recommended for systematic testing
+    # command: /opt/lldb/entrypoint_auto_lldb.sh
+    #
+    # ═══════════════════════════════════════════════════════════════════════════
+    # After changing mode:
+    #   docker compose stop dropbear_server
+    #   docker compose rm -f dropbear_server
+    #   docker compose up -d dropbear_server
+    #
+    # See TEST_PROCEDURE.md for detailed testing instructions
+    # See INVESTIGATION_GUIDE.md for advanced debugging
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    ports:
+      - "2223:22"
+    tty: true
+    stdin_open: true
+
+  dropbear_server_dbg:
+    build:
+      context: .
+      dockerfile: dropbear-server/dbg/Dockerfile
+    container_name: dropbear_server_dbg
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      LLDB_RESULTS_DIR: /data/lldb_results
+      LLDB_DUMPS_DIR: /data/dumps
+    volumes:
+      - ./lldb_results:/data/lldb_results
+      - ./dumps:/data/dumps
+    command: /opt/lldb/entrypoint_minimal.sh
+    # Default: /opt/lldb/entrypoint_auto_lldb.sh (full monitoring)
+    ports:
+      - "2228:22"
+    tty: true
+    stdin_open: true
+
+
+
+  wolfssh_server:
+    build:
+      context: .
+      dockerfile: wolfssh-server/Dockerfile
+    container_name: wolfssh_server
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/lldb_results:/data/lldb_results
+      - ./data/captures:/data/captures
+      - ./lldb:/opt/lldb:ro  # Mount LLDB callbacks
+    environment:
+      SSH_SERVER_TYPE: wolfssh
+      LLDB_RESULTS_DIR: /data/lldb_results
+      LLDB_DUMPS_DIR: /data/dumps
+      LLDB_KEYLOG: /data/keylogs/wolfssh_keylog.log
+      LLDB_ENABLE_MEMORY_DUMPS: "true"   # Enable full memory dumps
+      LLDB_ENABLE_WATCHPOINTS: "false"   # Disabled initially (can enable for Phase 2)
+    # Default command uses entrypoint.sh which launches wolfSSHd with LLDB monitoring
+    # See wolfssh-server/entrypoint_lldb.sh for details
+    ports:
+      - "2224:22"
+    tty: true
+    stdin_open: true
+
+  wolfssh_debug:
+    build:
+      context: .
+      dockerfile: wolfssh-server/dbg/Dockerfile
+    container_name: wolfssh_debug
+    volumes:
+      - ./data/debug_logs:/data/debug_logs
+      - ./data/keylogs:/data/keylogs
+    environment:
+      WOLFSSL_DEBUG_ON: "1"
+      WOLFSSH_DEBUG: "1"
+    # Two modes available:
+    # 1. Verbose logging (default): /entrypoint_debug.sh
+    # 2. Strace mode: /entrypoint_strace.sh
+    command: /entrypoint_debug.sh
+    ports:
+      - "2229:22"
+    tty: true
+    stdin_open: true
+
+  # Plain wolfSSH server (NO LLDB) for connectivity testing
+  wolfssh_server_plain:
+    build:
+      context: .
+      dockerfile: wolfssh-server/Dockerfile.plain
+    container_name: wolfssh_server_plain
+    ports:
+      - "2230:22"
+
+  paramiko_server:
+    build: ./paramiko-server
+    container_name: paramiko_server
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./lldb:/opt/lldb:ro
+      - ./paramiko-server/server_keylogger.py:/opt/server_keylogger.py:ro
+    environment:
+      LLDB_OUTDIR: /data/dumps
+      LLDB_KEYLOG: /data/keylogs/ssh_keylog.log
+      LLDB_LIBRARY: paramiko
+      LLDB_BINARY: /usr/bin/python3
+      PARAMIKO_ADMIN_PORT: 2323
+    ports:
+      - "2225:22"   # SSH server port (paramiko server listens here)
+      - "2323:2323" # admin TCP port for REKEY/TERMINATE requests
+    tty: true
+
+  # Ground-truth OpenSSH container with source code injection
+  # Automatically extracts:
+  #   - SHARED_SECRET (for Wireshark GUI decryption)
+  #   - NEWKEYS (derived encryption keys for Python decryptor)
+  #   - COOKIE, SESSION_ID (session metadata)
+  # No LLDB needed - keys logged via injected code in kex.c/packet.c
+  # Supports both server and client modes via MODE environment variable
+  openssh_groundtruth:
+    build: ./openssh-groundtruth
+    container_name: openssh_groundtruth
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/captures:/data/captures       # PCAP captures for decryption validation
+    environment:
+      MODE: server                                    # server or client
+      SSHKEYLOGFILE: /data/keylogs/groundtruth.log   # Enhanced keylog (SHARED_SECRET + NEWKEYS)
+      SSH_PORT: 22
+      CAPTURE_TRAFFIC: "true"                        # Auto-capture SSH traffic
+      CAPTURE_DIR: /data/captures
+      # Timezone sync: Use host timezone to match file timestamps with log timestamps
+      TZ: Europe/Berlin
+      # Client mode vars (only used if MODE=client):
+      # HOST: openssh_server          # Target server to connect to
+      # PORT: 22                       # Target port
+      # USER: testuser                 # SSH username
+      # PASSWORD: password             # SSH password
+      # SSH_CMD: "hostname"            # Command to run (optional, interactive if not set)
+    ports:
+      - "2226:22"                                     # Ground-truth reference port
+    tty: true
+
+  openssh_wolfssh_compat:
+    build: ./openssh-groundtruth
+    container_name: openssh_wolfssh_compat
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/captures:/data/captures
+    environment:
+      MODE: server
+      SSHKEYLOGFILE: /data/keylogs/wolfssh_compat.log
+      SSH_PORT: 22
+      # Timezone sync: Use host timezone to match file timestamps with log timestamps
+      TZ: Europe/Berlin
+      CAPTURE_TRAFFIC: "true"
+      CAPTURE_DIR: /data/captures
+      AUTH_METHODS: "password-only"  # Only password auth for wolfSSH compatibility
+    ports:
+      - "2227:22"  # Dedicated port for wolfSSH client testing
+    tty: true
+
+  openssh_lldb:
+    build:
+      context: .
+      dockerfile: openssh-lldb/Dockerfile
+    container_name: openssh_lldb
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/lldb_results:/data/lldb_results
+    environment:
+      SSH_SERVER_TYPE: openssh
+      LLDB_RESULTS_DIR: /data/lldb_results
+    ports:
+      - "2227:22"  # LLDB-monitored OpenSSH on different port
+    tty: true
+    stdin_open: true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CLIENT-SIDE MONITORING CONTAINERS
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  dropbear_client:
+    build:
+      context: .
+      dockerfile: dropbear-client/Dockerfile
+    container_name: dropbear_client
+    cap_add:
+      - SYS_PTRACE
+      - NET_ADMIN  # Required for tcpdump packet capture
+      - NET_RAW    # Required for tcpdump packet capture
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/lldb_results:/data/lldb_results
+      - ./data/captures:/data/captures  # PCAP captures
+    environment:
+      SSH_SERVER_HOST: openssh_groundtruth
+      SSH_SERVER_PORT: 22
+      SSH_USER: testuser
+      SSH_PASSWORD: password
+      LLDB_KEYLOG: /data/keylogs/dropbear_client_keylog.log
+      LLDB_RESULTS_DIR: /data/lldb_results
+      LLDB_DUMPS_DIR: /data/dumps
+      LLDB_EXTRACT_ALL_KEYS: "true"  # Extract all 6 RFC 4253 keys (default: true)
+      # v3.0: Function entry monitoring configuration
+      LLDB_ENABLE_ENTRY_DUMPS: "false"  # Enable memory dumps at function entry
+      LLDB_ENTRY_DUMP_FUNCTIONS: "all"  # 'all' or comma-separated list (e.g., "send_msg_channel_close,dropbear_exit")
+      # Timezone sync: Use host timezone to match file timestamps with log timestamps
+      TZ: Europe/Berlin
+    depends_on:
+      - openssh_groundtruth
+    # Note: Run with `docker compose run dropbear_client` for one-shot execution
+    # Or use `docker compose up dropbear_client` for service mode
+    # The container will exit after completing the SSH session
+    # v3.0: Function entry monitoring - 5 lifecycle functions (send_msg_channel_eof, send_msg_channel_close, etc.)
+    profiles:
+      - client-testing  # Optional profile to avoid auto-start
+
+  openssh_client_lldb:
+    build:
+      context: .
+      dockerfile: openssh-client-lldb/Dockerfile
+    container_name: openssh_client_lldb
+    cap_add:
+      - SYS_PTRACE
+      - NET_ADMIN  # Required for tcpdump packet capture
+      - NET_RAW    # Required for tcpdump packet capture
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/lldb_results:/data/lldb_results
+      - ./data/captures:/data/captures  # PCAP captures
+      - ./lldb:/opt/lldb:ro  # Mount shared LLDB utilities
+    environment:
+      SSH_SERVER_HOST: openssh_groundtruth
+      SSH_SERVER_PORT: 22
+      SSH_USER: testuser
+      SSH_PASSWORD: password
+      LLDB_KEYLOG: /data/keylogs/openssh_client_keylog.log
+      LLDB_KEYLOG_DEBUG: /data/keylogs/openssh_client_keylog_debug.log  # Detailed intermediate values
+      LLDB_RESULTS_DIR: /data/lldb_results
+      LLDB_DUMPS_DIR: /data/dumps
+      LLDB_CAPTURES_DIR: /data/captures  # PCAP capture directory
+      # v7.0: Function entry monitoring configuration
+      LLDB_ENABLE_ENTRY_DUMPS: "false"  # Enable memory dumps at function entry
+      LLDB_ENTRY_DUMP_FUNCTIONS: "all"  # 'all' or comma-separated list (e.g., "ssh_packet_free,kex_send_newkeys")
+      # Timezone sync: Use host timezone to match file timestamps with log timestamps
+      TZ: Europe/Berlin
+    depends_on:
+      - openssh_groundtruth
+    # Note: OpenSSH 9.8p1 built from source with debug symbols
+    # Dual hybrid extraction: kex_derive_keys() + EVP_KDF_derive()
+    # Cross-platform support: ARM64 and x86-64 (auto-detected)
+    # Extracts: encryption keys, IVs, MAC keys from both approaches
+    # v7.0: Function entry monitoring - 7 lifecycle functions (ssh_packet_free, client_channel_closed, etc.)
+    # For guaranteed results, use openssh_groundtruth instead
+    profiles:
+      - client-testing  # Optional profile to avoid auto-start
+
+  wolfssh_client:
+    build:
+      context: .
+      dockerfile: wolfssh-client/Dockerfile
+    container_name: wolfssh_client
+    cap_add:
+      - SYS_PTRACE
+      - NET_ADMIN  # Required for tcpdump packet capture
+      - NET_RAW    # Required for tcpdump packet capture
+    security_opt:
+      - seccomp=unconfined
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+      - ./data/lldb_results:/data/lldb_results
+      - ./data/captures:/data/captures  # PCAP captures
+      # Note: lldb callbacks copied during build, volume mount would overwrite entrypoint
+    environment:
+      SSH_SERVER_TYPE: wolfssh  # NEW: Fixes timing CSV filename (timing_wolfssh.csv)
+      SSH_SERVER_HOST: openssh_wolfssh_compat  # wolfSSH-compatible OpenSSH server (found via debug_wolfssh_interactive.sh)
+      TARGET_SSH_SERVER: openssh_wolfssh_compat  # wolfSSH-compatible OpenSSH server
+      SSH_SERVER_PORT: 22
+      SSH_USER: testuser
+      SSH_PASSWORD: password
+      LLDB_KEYLOG: /data/keylogs/wolfssh_client_keylog.log
+      LLDB_KEYLOG_DEBUG: /data/keylogs/wolfssh_client_keylog_debug.log  # Extended format with shared secrets
+      LLDB_RESULTS_DIR: /data/lldb_results
+      LLDB_DUMPS_DIR: /data/dumps
+      LLDB_CAPTURES_DIR: /data/captures  # PCAP capture directory
+      # v3.0: Function entry monitoring configuration
+      LLDB_ENABLE_ENTRY_DUMPS: "false"  # Enable memory dumps at function entry
+      LLDB_ENTRY_DUMP_FUNCTIONS: "all"  # 'all' or comma-separated list (e.g., "wolfSSH_shutdown,wolfSSH_free")
+      # Timezone sync: Use host timezone to match file timestamps with log timestamps
+      TZ: Europe/Berlin
+    depends_on:
+      - wolfssh_server  # Changed: depends on wolfSSH server now
+    # Note: wolfSSH 1.4.20-stable with wc_SSH_KDF() hook in libwolfssl
+    # Cross-platform support: ARM64 and x86-64
+    # Extracts: derived keys, shared secret (k), exchange hash (H), session ID
+    # Dual keylog: standard (NEWKEYS) + debug (extended with cryptographic parameters)
+    # v3.0: Function entry monitoring - 3 lifecycle functions (wolfSSH_shutdown, wolfSSH_free, wolfSSH_TriggerKeyExchange)
+    profiles:
+      - client-testing  # Optional profile to avoid auto-start
+
+  ssh_client:
+    build: ./ssh-client
+    container_name: ssh_client
+    cap_add:
+      - SYS_PTRACE
+      - NET_ADMIN  # Required for tcpdump packet capture
+      - NET_RAW    # Required for tcpdump packet capture
+    security_opt:
+      - seccomp=unconfined
+    depends_on:
+      - openssh_server
+      - dropbear_server
+      - wolfssh_server
+      - paramiko_server
+      - openssh_groundtruth
+    volumes:
+      - ./data/keylogs:/data/keylogs
+      - ./data/dumps:/data/dumps
+    environment:
+      LLDB_KEYLOG: /data/keylogs/ssh_keylog.log
+    tty: true

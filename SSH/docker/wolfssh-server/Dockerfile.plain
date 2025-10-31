@@ -1,0 +1,81 @@
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC
+
+# Install dependencies (minimal, no LLDB)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    wget \
+    git \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Use latest stable versions
+ENV WOLFSSL_VERSION=5.7.6-stable
+ENV WOLFSSH_VERSION=1.4.20-stable
+
+# Build wolfSSL with SSH support
+WORKDIR /tmp
+RUN git clone --depth 1 --branch v${WOLFSSL_VERSION} https://github.com/wolfSSL/wolfssl.git
+
+WORKDIR /tmp/wolfssl
+RUN ./autogen.sh
+RUN CFLAGS="-g -O0 -fno-omit-frame-pointer" ./configure \
+    --enable-ssh \
+    --enable-debug \
+    --prefix=/usr/local
+RUN make -j$(nproc)
+RUN make install
+RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/local.conf && ldconfig
+
+# Build wolfSSH
+WORKDIR /tmp
+RUN git clone --depth 1 --branch v${WOLFSSH_VERSION} https://github.com/wolfSSL/wolfssh.git
+
+WORKDIR /tmp/wolfssh
+RUN ./autogen.sh
+RUN CFLAGS="-g -O0 -fno-omit-frame-pointer" ./configure \
+    --with-wolfssl=/usr/local \
+    --enable-sshd \
+    --enable-debug \
+    --prefix=/usr/local
+RUN make -j$(nproc)
+RUN make install
+
+# Create directories
+RUN mkdir -p /etc/ssh /etc/wolfssh /var/run/sshd
+
+# Copy wolfSSHd configuration
+COPY wolfssh-server/sshd_config /etc/ssh/sshd_config
+
+# Copy SSH host keys from wolfSSH examples
+WORKDIR /tmp/wolfssh
+RUN if [ -d keys ]; then \
+        cp keys/*.pem /etc/wolfssh/ 2>/dev/null || true; \
+    fi
+
+# Create sshd privilege separation user
+RUN useradd -r -U -d /var/empty -s /bin/false -c "sshd privilege separation" sshd || true
+
+# Create test user
+RUN useradd -m testuser && echo "testuser:password" | chpasswd
+
+# Copy simple entrypoint (NO LLDB)
+COPY wolfssh-server/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Cleanup
+WORKDIR /
+RUN rm -rf /tmp/wolfssl /tmp/wolfssh
+
+# Expose SSH port
+EXPOSE 22
+
+# Run wolfSSHd directly (no LLDB)
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["-D", "-d", "-d", "-p", "22"]

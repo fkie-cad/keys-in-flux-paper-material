@@ -1,0 +1,86 @@
+#!/usr/bin/expect -f
+# Test SSH rekey using ~R escape sequence
+
+set timeout 30
+set server [lindex $argv 0]
+set keylog [lindex $argv 1]
+
+if {$argc < 2} {
+    puts "Usage: test_rekey.exp <server> <keylog_file>"
+    exit 1
+}
+
+# Set environment variable for keylog
+set env(SSHKEYLOGFILE) $keylog
+
+puts "\n=== Testing SSH Rekey with ~R Escape ==="
+puts "Server: $server"
+puts "Keylog: $keylog"
+puts "========================================\n"
+
+# Start SSH connection (use custom build with SSHKEYLOGFILE support)
+spawn /usr/bin/ssh -vvv -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p 22 testuser@$server
+
+# Handle password prompt
+expect {
+    "password:" {
+        send "password\r"
+    }
+    timeout {
+        puts "ERROR: Timeout waiting for password prompt"
+        exit 1
+    }
+}
+
+# Wait for prompt or welcome message
+expect {
+    -re {[\$#>]} {
+        puts "Connected successfully"
+    }
+    timeout {
+        puts "ERROR: Timeout waiting for shell prompt"
+        exit 1
+    }
+}
+
+puts "\n[PHASE 1] Initial connection established"
+send "echo Initial keys derived\r"
+sleep 2
+
+# Trigger rekey with ~R escape
+puts "\n[PHASE 2] Triggering rekey with ~R escape..."
+send "\r"
+sleep 0.5
+send "~R"
+sleep 0.5
+
+# Wait for rekey confirmation
+expect {
+    -re "NEWKEYS" {
+        puts "Rekey confirmed (NEWKEYS message)"
+    }
+    timeout {
+        puts "Note: No explicit NEWKEYS message (normal for some implementations)"
+    }
+}
+
+sleep 3
+puts "\n[PHASE 3] Post-rekey - testing connection stability"
+send "echo Rekey completed\r"
+expect -re {[\$#>]}
+sleep 2
+
+# Gracefully terminate with ~.
+puts "\n[PHASE 4] Terminating with ~. escape..."
+send "\r"
+sleep 0.5
+send "~."
+sleep 0.5
+
+puts "\n=== Test Complete ==="
+puts "Check keylog for extracted keys:"
+puts "  cat $keylog"
+puts "  python3 parse_keylog.py $keylog --summary"
+puts "\nExpected: 4 NEWKEYS entries (2 initial + 2 rekey)"
+
+exit 0

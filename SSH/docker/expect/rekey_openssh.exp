@@ -1,0 +1,194 @@
+#!/usr/bin/expect -f
+#
+# OpenSSH Rekey Automation Script
+#
+# Automates SSH connection lifecycle with explicit rekey request:
+#   1. Connect to SSH server
+#   2. Execute pre-rekey commands
+#   3. Trigger rekey using OpenSSH escape sequence (~R)
+#   4. Execute post-rekey commands
+#   5. Clean exit
+#
+# This script is designed for OpenSSH lifecycle experiments with memory
+# dumps and LLDB monitoring to capture key lifecycle events including rekey.
+#
+# Usage:
+#   ./rekey_openssh.exp <server> <port> <user> <password>
+#
+# Example:
+#   ./rekey_openssh.exp openssh_server 22 testuser password
+#
+
+set timeout 30
+set server [lindex $argv 0]
+set port [lindex $argv 1]
+set user [lindex $argv 2]
+set password [lindex $argv 3]
+
+# Validate arguments
+if {$argc != 4} {
+    puts "Usage: $argv0 <server> <port> <user> <password>"
+    puts ""
+    puts "Example:"
+    puts "  $argv0 openssh_server 22 testuser password"
+    exit 1
+}
+
+puts "\n========================================================================="
+puts "  OpenSSH Rekey Experiment - Expect Automation"
+puts "========================================================================="
+puts ""
+puts "Server:   ${server}:${port}"
+puts "User:     ${user}"
+puts "Phases:   connect → pre-rekey → REKEY → post-rekey → exit"
+puts ""
+puts "========================================================================="
+puts ""
+
+# Phase 1: Connect to SSH server
+puts "\[REKEY_EXP\] === PHASE 1: Connection Establishment ==="
+spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=QUIET -p ${port} ${user}@${server}
+
+# Handle password prompt
+expect {
+    "password:" {
+        send "${password}\r"
+        puts "\[REKEY_EXP\] ✓ Password sent"
+    }
+    timeout {
+        puts "\n\[REKEY_EXP\] ✗ Password prompt timeout"
+        exit 1
+    }
+}
+
+# Wait for shell prompt
+expect {
+    -re "\\$|#" {
+        puts "\[REKEY_EXP\] ✓ Shell prompt received - connection established"
+    }
+    timeout {
+        puts "\n\[REKEY_EXP\] ✗ Shell prompt timeout"
+        exit 1
+    }
+}
+
+sleep 1
+
+# Phase 2: Pre-rekey commands
+puts ""
+puts "\[REKEY_EXP\] === PHASE 2: Pre-Rekey Commands ==="
+puts "\[REKEY_EXP\] Executing commands before rekey to establish baseline..."
+sleep 1
+
+send "hostname\r"
+expect -re "\\$|#"
+puts "\[REKEY_EXP\] ✓ Command: hostname"
+sleep 0.5
+
+send "pwd\r"
+expect -re "\\$|#"
+puts "\[REKEY_EXP\] ✓ Command: pwd"
+sleep 0.5
+
+send "echo 'Pre-rekey phase complete'\r"
+expect -re "\\$|#"
+puts "\[REKEY_EXP\] ✓ Command: echo 'Pre-rekey phase complete'"
+sleep 1
+
+# Phase 3: Trigger rekey
+puts ""
+puts "\[REKEY_EXP\] === PHASE 3: Rekey Request ==="
+puts "\[REKEY_EXP\] Sending OpenSSH escape sequence for rekey: ~R"
+puts "\[REKEY_EXP\] NOTE: This triggers SSH_MSG_KEXINIT and new key derivation"
+sleep 1
+
+# Send rekey escape sequence (~R)
+# NOTE: Must send newline first to ensure we're at beginning of line
+send "\r"
+expect -re "\\$|#"
+sleep 0.5
+
+# Send escape sequence
+send "~R"
+
+# OpenSSH may or may not print confirmation message depending on version/config
+# Just wait a moment for rekey to complete
+sleep 2
+puts "\[REKEY_EXP\] ✓ Rekey escape sequence sent - waiting for completion..."
+
+# Send command to verify session is still alive after rekey
+send "echo 'Post-rekey session alive'\r"
+expect {
+    -re "Post-rekey session alive" {
+        puts "\[REKEY_EXP\] ✓ Session alive after rekey - SUCCESS"
+        expect -re "\\$|#"
+    }
+    timeout {
+        puts "\[REKEY_EXP\] ⚠️  Session may have dropped during rekey"
+    }
+}
+
+sleep 1
+
+# Phase 4: Post-rekey commands
+puts ""
+puts "\[REKEY_EXP\] === PHASE 4: Post-Rekey Commands ==="
+puts "\[REKEY_EXP\] Executing commands with new keys..."
+sleep 1
+
+send "ls -la /tmp | head -5\r"
+expect -re "\\$|#"
+puts "\[REKEY_EXP\] ✓ Command: ls -la /tmp | head -5"
+sleep 0.5
+
+send "date\r"
+expect -re "\\$|#"
+puts "\[REKEY_EXP\] ✓ Command: date"
+sleep 0.5
+
+send "uptime\r"
+expect -re "\\$|#"
+puts "\[REKEY_EXP\] ✓ Command: uptime"
+sleep 0.5
+
+send "echo 'OpenSSH rekey experiment complete'\r"
+expect -re "\\$|#"
+puts "\[REKEY_EXP\] ✓ Command: echo 'OpenSSH rekey experiment complete'"
+sleep 1
+
+# Phase 5: Clean exit
+puts ""
+puts "\[REKEY_EXP\] === PHASE 5: Session Termination ==="
+puts "\[REKEY_EXP\] Closing SSH connection..."
+send "exit\r"
+
+expect {
+    eof {
+        puts "\[REKEY_EXP\] ✓ SSH session closed cleanly"
+    }
+    timeout {
+        puts "\[REKEY_EXP\] ⚠️  Exit timeout (connection may have closed)"
+    }
+}
+
+puts ""
+puts "========================================================================="
+puts "  OpenSSH Rekey Experiment Complete"
+puts "========================================================================="
+puts ""
+puts "Summary:"
+puts "  ✓ Connected to ${server}:${port}"
+puts "  ✓ Executed pre-rekey commands"
+puts "  ✓ Triggered rekey via ~R escape sequence"
+puts "  ✓ Executed post-rekey commands"
+puts "  ✓ Session terminated cleanly"
+puts ""
+puts "Expected LLDB events:"
+puts "  1. Initial KEX (6 keys: A-F)"
+puts "  2. Rekey KEX (6 new keys: A-F)"
+puts "  3. Total: 12 key derivations"
+puts ""
+puts "Check keylog for 12 key entries to verify rekey worked."
+puts ""
+
+exit 0

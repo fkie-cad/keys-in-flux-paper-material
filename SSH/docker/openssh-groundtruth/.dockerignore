@@ -1,0 +1,14 @@
+# Ignore data directory during build
+data/
+*.log
+*.pcap
+*.dump
+
+# Ignore git files
+.git/
+.gitignore
+
+# Ignore temporary files
+*.swp
+*.bak
+*~

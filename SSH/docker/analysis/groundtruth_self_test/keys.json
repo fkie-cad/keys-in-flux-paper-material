@@ -1,0 +1,20 @@
+{
+  "sessions": [
+    {
+      "timestamp": 1760821899,
+      "cipher": "chacha20-poly1305@openssh.com",
+      "keys": {
+        "client_to_server": {
+          "encryption_key": "44718815a5e7d3aa40e1b3299190cb8d9afe36cbd66d5bb8d8a006f2293791028ce8ddad9b55144318926d86cba60b807ec46001cc1c2cd9f30cc465a56c739f",
+          "iv": "unknown"
+        },
+        "server_to_client": {
+          "encryption_key": "767acc8cb87726eb747153ef2eb754bb08e8fc3057e8531e70c9966d7756a7aaa8b34bb53d0c7d31618d2b107932928ec6bbe25f123709988e446ba146e9d27c",
+          "iv": "unknown"
+        }
+      },
+      "session_id": "SESSION_ID",
+      "cookie": "COOKIE"
+    }
+  ]
+}

@@ -1,0 +1,247 @@
+diff --git a/kex.c b/kex.c
+index 1234567..abcdefg 100644
+--- a/kex.c
++++ b/kex.c
+@@ -40,6 +40,10 @@
+ #include <poll.h>
+ #endif
+
++#include <sys/file.h>
++#include <time.h>
++#include <pthread.h>
++
+ #include "ssh.h"
+ #include "ssh2.h"
+ #include "atomicio.h"
+@@ -64,6 +68,96 @@
+ /* prototype */
+ static int kex_choose_conf(struct ssh *);
+ static int kex_input_newkeys(int, u_int32_t, struct ssh *);
++static void kex_log_keys(struct ssh *, const u_char *, size_t);
++
++/* Mutex for thread-safe keylog file writing */
++static pthread_mutex_t keylog_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++/* Helper: convert binary data to hex string */
++static char *
++bin2hex(const u_char *data, size_t len)
++{
++	static const char hex[] = "0123456789abcdef";
++	char *out;
++	size_t i;
++
++	if (len == 0 || len > 1024*1024)
++		return NULL;
++
++	out = malloc(len * 2 + 1);
++	if (out == NULL)
++		return NULL;
++
++	for (i = 0; i < len; i++) {
++		out[i * 2] = hex[(data[i] >> 4) & 0x0f];
++		out[i * 2 + 1] = hex[data[i] & 0x0f];
++	}
++	out[len * 2] = '\0';
++	return out;
++}
++
++/* Write keylog entry to SSHKEYLOGFILE and stderr */
++static void
++kex_log_keys(struct ssh *ssh, const u_char *cookie, size_t cookie_len)
++{
++	struct kex *kex = ssh->kex;
++	const char *keylog_file;
++	FILE *fp = NULL;
++	char *cookie_hex = NULL;
++	char *K_hex = NULL;
++	time_t now;
++	char *enc_name_in = "unknown";
++	char *enc_name_out = "unknown";
++	struct sshbuf *K_buf = NULL;
++	int fd;
++
++	/* Check if SSHKEYLOGFILE is set */
++	keylog_file = getenv("SSHKEYLOGFILE");
++	if (keylog_file == NULL)
++		return;
++
++	/* Extract shared secret K from kex structure */
++	if (kex == NULL || kex->session_id == NULL)
++		return;
++
++	/* Get encryption cipher names */
++	if (ssh->state && ssh->state->newkeys[MODE_IN]) {
++		if (ssh->state->newkeys[MODE_IN]->enc.name)
++			enc_name_in = (char *)ssh->state->newkeys[MODE_IN]->enc.name;
++	}
++	if (ssh->state && ssh->state->newkeys[MODE_OUT]) {
++		if (ssh->state->newkeys[MODE_OUT]->enc.name)
++			enc_name_out = (char *)ssh->state->newkeys[MODE_OUT]->enc.name;
++	}
++
++	/* Convert cookie to hex (from KEX_COOKIE_LEN bytes) */
++	if (cookie != NULL && cookie_len > 0) {
++		cookie_hex = bin2hex(cookie, cookie_len);
++	}
++
++	/* Try to extract shared secret K from kex - it's stored as BIGNUM or buffer */
++	/* Note: K is typically cleared after key derivation, so we need to log early */
++
++	/* Thread-safe file writing */
++	pthread_mutex_lock(&keylog_mutex);
++
++	fp = fopen(keylog_file, "a");
++	if (fp != NULL) {
++		now = time(NULL);
++		fprintf(fp, "%ld COOKIE %s CIPHER_IN %s CIPHER_OUT %s SESSION_ID ",
++			now,
++			cookie_hex ? cookie_hex : "unknown",
++			enc_name_in, enc_name_out);
++		/* Write session_id hex */
++		cookie_hex = bin2hex(sshbuf_ptr(kex->session_id), sshbuf_len(kex->session_id));
++		fprintf(fp, "%s\n", cookie_hex ? cookie_hex : "unknown");
++		fclose(fp);
++		fprintf(stderr, "[SSHKEYLOG] Wrote KEX info to %s\n", keylog_file);
++	}
++
++	pthread_mutex_unlock(&keylog_mutex);
++
++	free(cookie_hex);
++}
+
+ static const char *proposal_names[PROPOSAL_MAX] = {
+ 	"KEX algorithms",
+@@ -887,6 +977,9 @@ kex_input_newkeys(int type, u_int32_t seq, struct ssh *ssh)
+ 		return SSH_ERR_INTERNAL_ERROR;
+ 	}
+
++	/* Log keys to SSHKEYLOGFILE if set */
++	kex_log_keys(ssh, kex->peer_cookie, KEX_COOKIE_LEN);
++
+ 	/* XXX this is wrong for rekeying */
+ 	ssh_packet_set_rekey_limits(ssh, kex->kex_type,
+ 	    kex->newkeys[MODE_OUT]->enc.block_size,
+diff --git a/packet.c b/packet.c
+index 2345678..bcdefgh 100644
+--- a/packet.c
++++ b/packet.c
+@@ -65,6 +65,9 @@
+ #include <poll.h>
+ #endif
+
++#include <sys/file.h>
++#include <pthread.h>
++
+ #include "xmalloc.h"
+ #include "compat.h"
+ #include "ssh2.h"
+@@ -84,6 +87,98 @@
+ #include "ssherr.h"
+ #include "sshbuf.h"
+
++/* Mutex for thread-safe keylog writing from packet layer */
++static pthread_mutex_t pkt_keylog_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++/* Helper: convert binary to hex (duplicate from kex.c for packet.c) */
++static char *
++pkt_bin2hex(const u_char *data, size_t len)
++{
++	static const char hex[] = "0123456789abcdef";
++	char *out;
++	size_t i;
++
++	if (len == 0 || len > 1024*1024)
++		return NULL;
++
++	out = malloc(len * 2 + 1);
++	if (out == NULL)
++		return NULL;
++
++	for (i = 0; i < len; i++) {
++		out[i * 2] = hex[(data[i] >> 4) & 0x0f];
++		out[i * 2 + 1] = hex[data[i] & 0x0f];
++	}
++	out[len * 2] = '\0';
++	return out;
++}
++
++/* Log derived keys to SSHKEYLOGFILE */
++static void
++log_newkeys_info(struct ssh *ssh, int mode)
++{
++	struct session_state *state = ssh->state;
++	struct newkeys *newkeys;
++	const char *keylog_file;
++	FILE *fp = NULL;
++	char *key_hex = NULL;
++	char *iv_hex = NULL;
++	time_t now;
++	const char *mode_str = (mode == MODE_IN) ? "IN" : "OUT";
++
++	keylog_file = getenv("SSHKEYLOGFILE");
++	if (keylog_file == NULL)
++		return;
++
++	if (state == NULL || state->newkeys[mode] == NULL)
++		return;
++
++	newkeys = state->newkeys[mode];
++
++	/* Extract key and IV from newkeys structure */
++	if (newkeys->enc.key != NULL && newkeys->enc.key_len > 0) {
++		key_hex = pkt_bin2hex(newkeys->enc.key, newkeys->enc.key_len);
++	}
++	if (newkeys->enc.iv != NULL && newkeys->enc.iv_len > 0) {
++		iv_hex = pkt_bin2hex(newkeys->enc.iv, newkeys->enc.iv_len);
++	}
++
++	pthread_mutex_lock(&pkt_keylog_mutex);
++
++	fp = fopen(keylog_file, "a");
++	if (fp != NULL) {
++		now = time(NULL);
++		fprintf(fp, "%ld NEWKEYS MODE %s CIPHER %s KEY %s IV %s\n",
++			now,
++			mode_str,
++			newkeys->enc.name ? newkeys->enc.name : "unknown",
++			key_hex ? key_hex : "unknown",
++			iv_hex ? iv_hex : "unknown");
++		fclose(fp);
++		fprintf(stderr, "[SSHKEYLOG] Wrote NEWKEYS %s to %s\n", mode_str, keylog_file);
++	}
++
++	pthread_mutex_unlock(&pkt_keylog_mutex);
++
++	free(key_hex);
++	free(iv_hex);
++}
++
++/* Hook into ssh_set_newkeys to log derived keys */
++int
++ssh_set_newkeys_hook(struct ssh *ssh, int mode)
++{
++	int r;
++
++	/* Call original function */
++	r = ssh_set_newkeys(ssh, mode);
++
++	/* Log the keys if successful */
++	if (r == 0)
++		log_newkeys_info(ssh, mode);
++
++	return r;
++}
++
+ #ifdef PACKET_DEBUG
+ #define DBG(x) x
+ #else
+@@ -573,6 +668,10 @@ ssh_set_newkeys(struct ssh *ssh, int mode)
+ 		return SSH_ERR_INVALID_ARGUMENT;
+ 	}
+
++	/* Log the new keys to SSHKEYLOGFILE if set */
++	log_newkeys_info(ssh, mode);
++
+ 	return 0;
+ }
+

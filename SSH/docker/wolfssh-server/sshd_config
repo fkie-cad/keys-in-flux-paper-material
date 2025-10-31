@@ -1,0 +1,5 @@
+# Minimal wolfSSHd configuration
+Port 22
+HostKey /etc/wolfssh/server-key.pem
+PasswordAuthentication yes
+PermitRootLogin yes
