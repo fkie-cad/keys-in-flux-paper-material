@@ -46,9 +46,9 @@ Contains **utility scripts and research tools** for OpenSSH-specific key extract
 
 | Implementation | Version | Client | Server | Rekey Support |
 |----------------|---------|--------|--------|---------------|
-| OpenSSH | 10.2p1 | ✅ | ✅ | ✅ (via `~R`) |
-| Dropbear | 2025.88 | ✅ | ✅ | ⚠️ (automatic) |
-| wolfSSH | 1.4.12 | ✅ | ✅ | ✅ (programmatic) |
+| OpenSSH | 10.2p1 | ✓  | ✓  | ✓  (via `~R`) |
+| Dropbear | 2025.88 | ✓  | ✓  |  ✗ (automatic) is implemented but not working |
+| wolfSSH | 1.4.12 | ✓  | ✓  | ✓  (programmatic) |
 
 ---
 
