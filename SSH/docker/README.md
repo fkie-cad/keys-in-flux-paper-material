@@ -126,7 +126,7 @@ docker compose images
 
 **Ubuntu ARM64:**
 - Fully supported with same Dockerfiles as x86-64
-- LLDB 18 provides ARM64 watchpoint support
+- LLDB >=18 provides ARM64 watchpoint support
 
 ---
 
