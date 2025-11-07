@@ -7,9 +7,9 @@ This directory contains the SSH implementation monitoring framework for analyzin
 
 | Implementation | Version | Client | Server | Rekey Support |
 |----------------|---------|--------|--------|---------------|
-| OpenSSH | 10.2p1 | ✓  | ✓  | ✓  (via `~R`) |
+| OpenSSH | 10.2p1 | ✓  | ✗  | ✓  (via `~R`) |
 | Dropbear | 2025.88 | ✓  | ✓  |  ✗ (automatic) is implemented but not working |
-| wolfSSH | 1.4.12 | ✓  | ✓  | ✓  (programmatic) |
+| wolfSSH | 1.4.12 | ✓  | ✗   | ✓  (programmatic) |
 
 We evaluated our results on a Ubuntu 24.04 with Kernel version 6.8.0-85-generic.
 
