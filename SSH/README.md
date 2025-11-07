@@ -2,6 +2,19 @@
 
 This directory contains the SSH implementation monitoring framework for analyzing cryptographic key lifecycle across multiple SSH implementations.
 
+
+## Supported Implementations
+
+| Implementation | Version | Client | Server | Rekey Support |
+|----------------|---------|--------|--------|---------------|
+| OpenSSH | 10.2p1 | ✓  | ✓  | ✓  (via `~R`) |
+| Dropbear | 2025.88 | ✓  | ✓  |  ✗ (automatic) is implemented but not working |
+| wolfSSH | 1.4.12 | ✓  | ✓  | ✓  (programmatic) |
+
+We evaluated our results on a Ubuntu 24.04 with Kernel version 6.8.0-85-generic.
+---
+
+
 ## Directory Structure
 
 ### `docker/`
@@ -39,16 +52,6 @@ Contains **utility scripts and research tools** for OpenSSH-specific key extract
 - Custom key extraction workflows
 - Batch PCAP decryption with extracted keys
 - Research and validation of extraction techniques
-
----
-
-## Supported Implementations
-
-| Implementation | Version | Client | Server | Rekey Support |
-|----------------|---------|--------|--------|---------------|
-| OpenSSH | 10.2p1 | ✓  | ✓  | ✓  (via `~R`) |
-| Dropbear | 2025.88 | ✓  | ✓  |  ✗ (automatic) is implemented but not working |
-| wolfSSH | 1.4.12 | ✓  | ✓  | ✓  (programmatic) |
 
 ---
 
